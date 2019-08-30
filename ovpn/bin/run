@@ -1,0 +1,66 @@
+#!/bin/sh
+set -e
+[ -d /dev/net ] ||
+    mkdir -p /dev/net
+[ -c /dev/net/tun ] ||
+    mknod /dev/net/tun c 10 200
+cd /etc/openvpn
+# This file tells `serveconfig` that there is a config there
+touch placeholder
+[ -f dh.pem ] ||
+    openssl dhparam -out dh.pem 1024
+[ -f key.pem ] ||
+    openssl genrsa -out key.pem 2048
+chmod 600 key.pem
+[ -f csr.pem ] ||
+    openssl req -new -key key.pem -out csr.pem -subj /CN=OpenVPN/
+[ -f cert.pem ] ||
+    openssl x509 -req -in csr.pem -out cert.pem -signkey key.pem -days 3650
+
+[ -f ovpn.conf ] || cat >ovpn.conf <<EOF
+server $2 255.255.255.128
+verb 3
+duplicate-cn
+key key.pem
+ca cert.pem
+cert cert.pem
+dh dh.pem
+keepalive 10 60
+persist-key
+persist-tun
+push "dhcp-option DNS 180.76.76.76"
+
+proto udp
+port 1194
+dev tun1194
+status openvpn-status-1194.log
+EOF
+[ -f client.ovpn ] || cat >client.ovpn <<EOF
+remote $1 1194 udp
+client
+dev tun
+nobind
+<key>
+`cat key.pem`
+</key>
+<cert>
+`cat cert.pem`
+</cert>
+<ca>
+`cat cert.pem`
+</ca>
+EOF
+[ -f client.http ] || cat >client.http <<EOF
+HTTP/1.0 200 OK
+Content-Type: application/x-openvpn-profile
+Content-Disposition: attachment;filename=$1.ovpn
+Content-Length: `wc -c client.ovpn`
+
+`cat client.ovpn`
+EOF
+
+iptables -t nat -A POSTROUTING -s $2/25 -o eth0 -j MASQUERADE
+
+touch ovpn.log
+while true ; do openvpn ovpn.conf ; done >> ovpn.log &
+tail -F ovpn.log
